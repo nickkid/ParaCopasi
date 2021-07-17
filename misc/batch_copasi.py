@@ -1,0 +1,243 @@
+"""
+Arguments accepted in command
+-----------------------------------------------------------
+batch_file: .csv file specifying tasks formatted as follows:
+taskID,model_file,number_of_repeats
+--workspace_dir
+--result_file_prefix
+--result_dir
+--max_workers
+
+Report related arguments accepted in command
+----------------------------------------------------------------------------------
+--task_log: specify the path to the task log formatted as the following csv format:
+taskID,order_of_repeat,cpu_time_start,cpu_time_end,cpu_time_spent
+--speedup_summary: specify the path to the speedup summary:
+wall_clock_time_start,wall_clock_time_end,wall_clock_time,total_cpu_time,speedup_ratio
+"""
+import os
+import sys
+import argparse
+import time
+import pandas as pd
+from mpi4py.futures import MPIPoolExecutor
+from ..utility.path_manipulate import expandabspath as eap
+DEFAULT_COPASI_PATH = 'CopasiSE'
+DEFAULT_OUTPUT_DIR = 'results'
+DEFAULT_RESULT_PREFIX = 'results'
+DEFAULT_REPEATS_OF_TASK = 1
+DEFAULT_MAX_WORKERS = 1
+TASK_ENV = {
+    'BATCH_FILE':
+    None,
+    'WORKSPACE_DIR':
+    os.getcwd(),
+    'MODEL_FILE_PATH':
+    None,
+    'MODEL_FILE_DIR':
+    None,
+    'MODEL_FILENAME':
+    None,
+    'RESULT_DIR':
+    os.getcwd(),
+    'REPEATS_OF_TASK':
+    DEFAULT_REPEATS_OF_TASK,
+    'MAX_WORKERS':
+    DEFAULT_MAX_WORKERS,
+    'COPASI_PATH':
+    DEFAULT_COPASI_PATH,
+    'CONFIGDIR':
+    '{}/{}'.format(os.getenv('HOME'),
+                   'COPASI-4.29.228-Linux-64bit/share/copasi/config')
+}
+task_log = None
+speedup_summary = None
+
+
+def run_model(taskID, order_of_repeat, TASK_ENV):
+    os.chdir(TASK_ENV['MODEL_FILE_DIR'])
+    output_path = '{}/{}.dat{}'.format(TASK_ENV['RESULT_DIR'],
+                                       TASK_ENV['MODEL_FILENAME'],
+                                       order_of_repeat)
+    cmd = '{} {} --report-file {} --nologo --copasidir {}'.format(
+        TASK_ENV['COPASI_PATH'], TASK_ENV['MODEL_FILE_PATH'], output_path,
+        TASK_ENV['CONFIGDIR'])
+    start_time = time.perf_counter()
+    os.system(cmd)
+    end_time = time.perf_counter()
+    time_spent = end_time - start_time
+    return taskID, order_of_repeat, start_time, end_time, time_spent
+
+
+def get_parser():
+    """
+    batch_file
+    --workspace_dir
+    --result_dir
+    --task_log
+    --speedup_summary
+    --max_workers
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--copasi_path',
+                        '-c',
+                        type=str,
+                        default=DEFAULT_COPASI_PATH,
+                        help='The path to the CopasiSE executable.')
+    parser.add_argument('batch_file', type=str, help='Path to the batch file.')
+    parser.add_argument('--workspace_dir',
+                        '-F',
+                        type=str,
+                        default=os.getcwd(),
+                        help='Directory of the workspace. A new one \
+                            will be created if not exist.')
+    parser.add_argument(
+        '--result_dir',
+        '-d',
+        type=str,
+        default='results',
+        help='The diretory to which the results will be saved.')
+    parser.add_argument('--task_log',
+                        '-l',
+                        type=str,
+                        default=None,
+                        help='The path to which the task log will be saved.')
+    parser.add_argument(
+        '--speedup_summary',
+        '-s',
+        type=str,
+        default=None,
+        help='The path to which the speedup summary will be saved.')
+    parser.add_argument('--max_workers',
+                        '-w',
+                        type=int,
+                        default=DEFAULT_MAX_WORKERS,
+                        help='The number of max_workers.')
+    return parser
+
+
+def set_env(args):
+    global task_log, speedup_summary
+    TASK_ENV['BATCH_FILE'] = eap(args.batch_file)
+    TASK_ENV['WORKSPACE_DIR'] = eap(args.workspace_dir)
+    if not os.path.exists(TASK_ENV['WORKSPACE_DIR']):
+        os.makedirs(TASK_ENV['WORKSPACE_DIR'])
+    os.chdir(TASK_ENV['WORKSPACE_DIR'])
+    TASK_ENV['RESULT_DIR'] = args.result_dir
+    TASK_ENV['MAX_WORKERS'] = args.max_workers
+    TASK_ENV['COPASI_PATH'] = args.copasi_path
+    if args.task_log or args.speedup_summary is None:
+        _, batch_filename = os.path.split(TASK_ENV['BATCH_FILE'])
+        if task_log is None:
+            task_log = os.path.abspath('{}_{}_workers.log'.format(
+                batch_filename, args.max_workers))
+        else:
+            task_log = args.task_log
+        if speedup_summary is None:
+            speedup_summary = os.path.abspath('{}_{}_speedup_summary'.format(
+                batch_filename, args.max_workers))
+        else:
+            speedup_summary = args.speedup_summary
+
+
+def get_task_list(df):
+    """
+    input
+    -------------------------------------------------------------
+    df: pandas DataFrame. Generated by reading the batch file. 
+    
+    output
+    ----------------------------------------------------------------
+    taskID_list: list of int. ID of the task specified in the batch file.
+    order_of_repeat_list: list of int. Order of repeat of the task.
+    task_env_list: list of dict. Task environment setttings.
+    task_stats: dict. task stats including number of different tasks and 
+    number of each tasks.
+    """
+    taskID_list = []
+    order_of_repeat_list = []
+    task_env_dict = {'different_tasks':0}
+    task_env_list = []
+    task_stats = {'different_tasks':0}
+    for i in range(len(df)):
+        number_of_repeats = df.at[i, 'number_of_repeats']
+        taskID = df.at[i, 'taskID']
+        taskID_list.extend([taskID] * number_of_repeats)
+        if not task_stats.__contains__(taskID):
+            task_stats['different_tasks'] += 1
+            task_stats[taskID] = 0
+            task_env = TASK_ENV.copy()
+            task_env_dict[taskID] = task_env
+        else:
+            task_env = task_env_dict[taskID]
+        order_of_repeat_list.extend(range(task_stats[taskID], task_stats[taskID] + number_of_repeats))
+        task_stats[taskID] += number_of_repeats
+        task_env['MODEL_FILE_PATH'] = eap(df.at[i, 'model_file'])
+        task_env['MODEL_FILE_DIR'], task_env['MODEL_FILENAME'] = os.path.split(
+            task_env['MODEL_FILE_PATH'])
+        os.chdir(task_env['MODEL_FILE_DIR'])
+        if not os.path.exists(task_env['RESULT_DIR']):
+            os.makedirs(task_env['RESULT_DIR'])
+        task_env_list.extend([task_env] * number_of_repeats)
+    return taskID_list, order_of_repeat_list, task_env_list, task_stats
+
+
+def main():
+    # get batch file via command
+    parser = get_parser()
+    args = parser.parse_args()
+    set_env(args)
+    # check if the batch file exists
+    if not os.path.exists(TASK_ENV['BATCH_FILE']):
+        print('Batch file not exist.')
+        sys.exit(1)
+    """
+    read the .csv batch file:
+
+    taskID              model_file                    number_of_repeats
+    ------------------------------------------------------------------------------------------------
+    ID of the task      path to the .cps file         number of repeats of corresponding task specified by the .cps file
+
+    Comment lines start with '#'.
+    """
+    df = pd.read_csv(TASK_ENV['BATCH_FILE'], comment='#')
+    # generate MPI task list
+    taskID_list, order_of_repeat_list, task_env_list, task_stats = get_task_list(df)
+    wall_clock_time_start = time.perf_counter()
+    with MPIPoolExecutor(max_workers=TASK_ENV['MAX_WORKERS']) as executor:
+        result_set = executor.map(run_model,
+                                  taskID_list,
+                                  order_of_repeat_list,
+                                  task_env_list,
+                                  unordered=True,
+                                  chunksize=1)
+        """ for res in executor.map(run_model,
+                                taskID_list,
+                                order_of_repeat_list,
+                                task_env_list,
+                                unordered=True,
+                                chunksize=1):
+            res_df.append(res) """
+    res_df = pd.DataFrame(result_set, columns=[
+        'taskID', 'order_of_repeat', 'cpu_time_start',
+        'cpu_time_end', 'cpu_time_spent'])
+    wall_clock_time_end = time.perf_counter()
+    res_df.to_csv(task_log, index=False)
+    # wall_clock_time_start,wall_clock_time_end,wall_clock_time,total_cpu_time,speedup_ratio
+    wall_clock_time = wall_clock_time_end - wall_clock_time_start
+    total_cpu_time = sum(res_df['cpu_time_spent'])
+    speedup_ratio = total_cpu_time / wall_clock_time
+    d = {
+        'wall_clock_time_start': wall_clock_time_start,
+        'wall_clock_time_end': wall_clock_time_end,
+        'wall_clock_time': wall_clock_time,
+        'total_cpu_time': total_cpu_time,
+        'speedup_ratio': speedup_ratio
+    }
+    summary_df = pd.DataFrame(data=d, index=[0])
+    summary_df.to_csv(speedup_summary, index=False)
+    print(task_stats)
+
+
+if __name__ == '__main__':
+    main()
