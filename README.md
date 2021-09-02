@@ -1,7 +1,7 @@
 # ParaCopasi
 A Python Package for Parallel COPASI tasks.
 ## Platform
-ParaCopasi is written in Python 3. The development and test was on Python 3.7.6 and Python 3.8.3. It currently only support Linux OS. For windows users, Windows Subsystem for Linux (WSL) is recommended. Here is a documentation for WSL installation in Windows 10
+ParaCopasi is written in Python 3. The development and test was on Python 3.7.6 and Python 3.8.3. It currently only support Linux OS. For windows users, Windows Subsystem for Linux (WSL) is recommended. Here is a documentation for WSL installation on Windows 10
 https://docs.microsoft.com/en-us/windows/wsl/install-win10
 ## Prerequisite
 ### MPICH
