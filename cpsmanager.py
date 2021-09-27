@@ -91,6 +91,28 @@ class cpsmanager():
             start.set('value', repr(init))
             # print(name,'start value set')
         return True
+    
+    def set_global_quantity(self, name, value):
+        """
+        Modify a fixed global quantity with name to value.
+        """
+        # 1. find the key according to the name
+        self.ListOfModelValues = self.model.find(f'./{self.getFullTag("ListOfModelValues")}')
+        key = self.ListOfModelValues.find(f'./{self.getFullTag("ModelValue")}[@name="{name}"]').get('key')
+        # 2. spot the index of name in the state template
+        self.StateTemplate = self.model.find(self.getFullTag('StateTemplate'))
+        for key_index,it in enumerate(self.StateTemplate.iterfind(self.getFullTag('StateTemplateVariable'))):
+            if it.get('objectReference') == key:
+                break
+        # 3. construct initial state string
+        self.InitialState = self.model.find(self.getFullTag('InitialState'))
+        print(self.InitialState.text)
+        state_string = self.InitialState.text.split()
+        # 4. modify the value in the initial state
+        state_string[key_index] = str(value)
+        # 5. write the initial state
+        self.InitialState.text = ' '.join(state_string)
+        print(self.InitialState.text)
 
     def ensure_experiment_abspath(self, cpsfile_dir):
         experiment_xpath = './{}/{}[@name="Experiment Set"]'.format(
@@ -110,9 +132,9 @@ class cpsmanager():
 
 # testbench
 if __name__ == '__main__':
-    CPS_FILENAME = 'example/models/two_step_sGC_activation.cps'
+    CPS_FILENAME = 'example/models/Stone.1995.cps'
     cm = cpsmanager(CPS_FILENAME)
     cm.parse()
-    # cm.set_pe_parameter('k1', low=1.4e8, high=1.4e12, init=1.4e9)
-    cm.set_pe_parameter(*('k1', 1.4e8, 1.4e12, 1.4e9))
+    cm.set_global_quantity('[NO]',1e-6)
+    # cm.save('test.cps')
     cm.save('test.cps')
